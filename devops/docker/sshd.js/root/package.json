@@ -1,0 +1,29 @@
+{
+  "name": "SSHD.js",
+  "version": "0.2.0",
+  "description": "A ssh server with docker integration",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "aws-sdk": "2.383.0",
+    "async": "2.6.1",
+    "dockerode": "2.5.7",
+    "ssh2": "0.6.2"
+  },
+  "engines": {
+    "node": "11.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ezops-br/SSHD.js"
+  },
+  "keywords": [
+    "node",
+    "sshd",
+    "docker"
+  ],
+  "author": "Weslei Teixeira da Silveira",
+  "license": "MIT"
+}

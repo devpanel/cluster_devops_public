@@ -1,0 +1,511 @@
+#devpanel
+#Copyright (C) 2018 devpanel
+
+#This program is free software: you can redistribute it and/or modify
+#it under the terms of the GNU General Public License as published by
+#the Free Software Foundation, either version 3 of the License, or
+#(at your option) any later version.
+
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+
+#You should have received a copy of the GNU General Public License
+#along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Sets up ecs-cluster-rds
+Parameters:
+  ClusterName:
+    Type: String
+
+  LambdaAlarmToSlackArn:
+    Type: String
+
+
+  AsgAlarmYellowCpuUtilizationOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  AsgAlarmYellowCpuUtilizationThreshold:
+    Type: Number
+    Default: 80
+
+  AsgAlarmYellowCpuUtilizationSeconds:
+    Type: Number
+    Default: 60
+
+
+  AsgAlarmRedCpuUtilizationOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  AsgAlarmRedCpuUtilizationThreshold:
+    Type: Number
+    Default: 90
+
+  AsgAlarmRedCpuUtilizationSeconds:
+    Type: Number
+    Default: 60
+
+
+  RdsAlarmYellowCpuUtilizationOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  RdsAlarmYellowCpuUtilizationThreshold:
+    Type: Number
+    Default: 80
+
+  RdsAlarmYellowCpuUtilizationSeconds:
+    Type: Number
+    Default: 120
+
+
+  RdsAlarmYellowDatabaseConnectionsOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  RdsAlarmYellowDatabaseConnectionsThreshold:
+    Type: Number
+    Default: 30
+
+  RdsAlarmYellowDatabaseConnectionsSeconds:
+    Type: Number
+    Default: 60
+
+
+  RdsAlarmYellowFreeStorageSpaceOperator:
+    Type: String
+    Default: LessThanOrEqualToThreshold
+
+  RdsAlarmYellowFreeStorageSpaceThreshold:
+    Type: Number
+    Default: 10000
+
+  RdsAlarmYellowFreeStorageSpaceSeconds:
+    Type: Number
+    Default: 60
+
+
+  RdsAlarmYellowSwapUsageOperator:
+    Type: String
+    Default: GreaterThanThreshold
+
+  RdsAlarmYellowSwapUsageThreshold:
+    Type: Number
+    Default: 50000000
+
+  RdsAlarmYellowSwapUsageSeconds:
+    Type: Number
+    Default: 300
+
+
+  RdsAlarmYellowReadLatencyOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  RdsAlarmYellowReadLatencyThreshold:
+    Type: Number
+    Default: 60
+
+  RdsAlarmYellowReadLatencySeconds:
+    Type: Number
+    Default: 60
+
+
+  RdsAlarmYellowFreeableMemoryOperator:
+    Type: String
+    Default: LessThanOrEqualToThreshold
+
+  RdsAlarmYellowFreeableMemoryThreshold:
+    Type: Number
+    Default: 10000
+
+  RdsAlarmYellowFreeableMemorySeconds:
+    Type: Number
+    Default: 60
+
+
+  RdsAlarmRedCpuUtilizationOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  RdsAlarmRedCpuUtilizationThreshold:
+    Type: Number
+    Default: 90
+
+  RdsAlarmRedCpuUtilizationSeconds:
+    Type: Number
+    Default: 60
+
+
+  EcsAlarmYellowCpuUtilizationOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  EcsAlarmYellowCpuUtilizationThreshold:
+    Type: Number
+    Default: 80
+
+  EcsAlarmYellowCpuUtilizationSeconds:
+    Type: Number
+    Default: 300
+
+
+  EcsAlarmYellowMemoryUtilizationOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  EcsAlarmYellowMemoryUtilizationThreshold:
+    Type: Number
+    Default: 80
+
+  EcsAlarmYellowMemoryUtilizationSeconds:
+    Type: Number
+    Default: 300
+
+
+  EcsAlarmRedCpuUtilizationOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  EcsAlarmRedCpuUtilizationThreshold:
+    Type: Number
+    Default: 90
+
+  EcsAlarmRedCpuUtilizationSeconds:
+    Type: Number
+    Default: 120
+
+
+  EcsAlarmRedMemoryUtilizationOperator:
+    Type: String
+    Default: GreaterThanOrEqualToThreshold
+
+  EcsAlarmRedMemoryUtilizationThreshold:
+    Type: Number
+    Default: 90
+
+  EcsAlarmRedMemoryUtilizationSeconds:
+    Type: Number
+    Default: 120
+
+
+Resources:
+  AsgAlarmYellowCpuUtilization:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}AutoScalingGroup
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__asg_alarm_yellow_cpuutilization
+      Period: !Ref AsgAlarmYellowCpuUtilizationSeconds
+      ComparisonOperator: !Ref AsgAlarmYellowCpuUtilizationOperator
+      Statistic: Average
+      Threshold: !Ref AsgAlarmYellowCpuUtilizationThreshold
+
+  AsgAlarmRedCpuUtilization:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}AutoScalingGroup
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__asg_alarm_red_cpuutilization
+      Period: !Ref AsgAlarmRedCpuUtilizationSeconds
+      ComparisonOperator: !Ref AsgAlarmRedCpuUtilizationOperator
+      Statistic: Average
+      Threshold: !Ref AsgAlarmRedCpuUtilizationThreshold
+
+  AsgAlarmIncreaseCpuUtilization:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}AutoScalingGroup
+      AlarmActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}ScaleUpPolicy
+      AlarmName: !Sub ${ClusterName}_cluster__asg_alarm_increase_cpuutilization
+      Period: 60
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Statistic: Average
+      Threshold: 60
+
+  AsgAlarmIncreaseCPUReservation:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ECS
+      MetricName: CPUReservation
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ClusterName
+      AlarmActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}ScaleUpPolicy
+      AlarmName: !Sub ${ClusterName}_cluster__asg_alarm_increase_cpureservation
+      Period: 60
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Statistic: Average
+      Threshold: 60
+
+  AsgAlarmDecreaseCPUReservation:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ECS
+      MetricName: CPUReservation
+      EvaluationPeriods: 60
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref ClusterName
+      AlarmActions:
+        - 'Fn::ImportValue': !Sub ${ClusterName}ScaleDownPolicy
+      AlarmName: !Sub ${ClusterName}_cluster__asg_alarm_decrease_cpureservation
+      Period: 60
+      ComparisonOperator: LessThanThreshold
+      Statistic: Average
+      Threshold: 20
+
+  #========== RDS Alarms
+  RdsAlarmYellowCpuUtilization:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}DBInstance
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__rds_alarm_yellow_cpuutilization
+      Period: !Ref RdsAlarmYellowCpuUtilizationSeconds
+      ComparisonOperator: !Ref RdsAlarmYellowCpuUtilizationOperator
+      Statistic: Average
+      Threshold: !Ref RdsAlarmYellowCpuUtilizationThreshold
+
+  RdsAlarmYellowDatabaseConnections:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/RDS
+      MetricName: DatabaseConnections
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}DBInstance
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__rds_alarm_yellow_databaseconnections
+      Period: !Ref RdsAlarmYellowDatabaseConnectionsSeconds
+      ComparisonOperator: !Ref RdsAlarmYellowDatabaseConnectionsOperator
+      Statistic: Average
+      Threshold: !Ref RdsAlarmYellowDatabaseConnectionsThreshold
+
+  RdsAlarmYellowFreeStorageSpace:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/RDS
+      MetricName: FreeStorageSpace
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}DBInstance
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__rds_alarm_yellow_freestoragespace
+      Period: !Ref RdsAlarmYellowFreeStorageSpaceSeconds
+      ComparisonOperator: !Ref RdsAlarmYellowFreeStorageSpaceOperator
+      Statistic: Average
+      Threshold: !Ref RdsAlarmYellowFreeStorageSpaceThreshold
+
+  RdsAlarmYellowSwapUsage:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/RDS
+      MetricName: SwapUsage
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}DBInstance
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__rds_alarm_yellow_swapusage
+      Period: !Ref RdsAlarmYellowSwapUsageSeconds
+      ComparisonOperator: !Ref RdsAlarmYellowSwapUsageOperator
+      Statistic: Average
+      Threshold: !Ref RdsAlarmYellowSwapUsageThreshold
+
+  RdsAlarmYellowReadLatency:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/RDS
+      MetricName: ReadLatency
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}DBInstance
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__rds_alarm_yellow_readlatency
+      Period: !Ref RdsAlarmYellowReadLatencySeconds
+      ComparisonOperator: !Ref RdsAlarmYellowReadLatencyOperator
+      Statistic: Average
+      Threshold: !Ref RdsAlarmYellowReadLatencyThreshold
+
+  RdsAlarmYellowFreeableMemory:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/RDS
+      MetricName: FreeableMemory
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}DBInstance
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__rds_alarm_yellow_freeablememory
+      Period: !Ref RdsAlarmYellowFreeableMemorySeconds
+      ComparisonOperator: !Ref RdsAlarmYellowFreeableMemoryOperator
+      Statistic: Average
+      Threshold: !Ref RdsAlarmYellowFreeableMemoryThreshold
+
+  RdsAlarmRedCpuUtilization:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}DBInstance
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__rds_red_yellow_cpuutilization
+      Period: !Ref RdsAlarmRedCpuUtilizationSeconds
+      ComparisonOperator: !Ref RdsAlarmRedCpuUtilizationOperator
+      Statistic: Average
+      Threshold: !Ref RdsAlarmRedCpuUtilizationThreshold
+
+  #========== ECS Alarms
+  EcsAlarmYellowCpuUtilization:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: ClusterName
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}ECSCluster
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__ecs_alarm_yellow_cpuutilization
+      Period: !Ref EcsAlarmYellowCpuUtilizationSeconds
+      ComparisonOperator: !Ref EcsAlarmYellowCpuUtilizationOperator
+      Statistic: Average
+      Threshold: !Ref EcsAlarmYellowCpuUtilizationThreshold
+
+  EcsAlarmYellowMemoryUtilization:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: ClusterName
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}ECSCluster
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__ecs_alarm_yellow_memoryutilization
+      Period: !Ref EcsAlarmYellowMemoryUtilizationSeconds
+      ComparisonOperator: !Ref EcsAlarmYellowMemoryUtilizationOperator
+      Statistic: Average
+      Threshold: !Ref EcsAlarmYellowMemoryUtilizationThreshold
+
+  EcsAlarmRedCpuUtilization:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ECS
+      MetricName: CPUUtilization
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: ClusterName
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}ECSCluster
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__ecs_alarm_red_cpuutilization
+      Period: !Ref EcsAlarmRedCpuUtilizationSeconds
+      ComparisonOperator: !Ref EcsAlarmRedCpuUtilizationOperator
+      Statistic: Average
+      Threshold: !Ref EcsAlarmRedCpuUtilizationThreshold
+
+  EcsAlarmRedMemoryUtilization:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      Namespace: AWS/ECS
+      MetricName: MemoryUtilization
+      EvaluationPeriods: 1
+      Dimensions:
+        - Name: ClusterName
+          Value:
+            'Fn::ImportValue': !Sub ${ClusterName}ECSCluster
+      AlarmActions:
+        - !Ref LambdaAlarmToSlackArn
+      OKActions:
+        - !Ref LambdaAlarmToSlackArn
+      AlarmName: !Sub ${ClusterName}_cluster__ecs_alarm_red_memoryutilization
+      Period: !Ref EcsAlarmRedMemoryUtilizationSeconds
+      ComparisonOperator: !Ref EcsAlarmRedMemoryUtilizationOperator
+      Statistic: Average
+      Threshold: !Ref EcsAlarmRedMemoryUtilizationThreshold

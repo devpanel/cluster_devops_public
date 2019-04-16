@@ -1,0 +1,449 @@
+#devpanel
+#Copyright (C) 2018 devpanel
+
+#This program is free software: you can redistribute it and/or modify
+#it under the terms of the GNU General Public License as published by
+#the Free Software Foundation, either version 3 of the License, or
+#(at your option) any later version.
+
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+
+#You should have received a copy of the GNU General Public License
+#along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Sets up ecs-cluster-rds
+Parameters:
+  ClusterName:
+    Type: String
+
+  ECSInstanceType:
+    Type: String
+
+  AsgServiceMin:
+    Type: String
+
+  AsgServiceDesired:
+    Type: String
+
+  AsgServiceMax:
+    Type: String
+
+  S3Bucket:
+    Type: String
+
+  TypeProject:
+    Type: String
+
+  Branch:
+    Type: String
+
+  Commit:
+    Type: String
+
+  ClusterVersion:
+    Type: String
+
+  EcsImage:
+    Type: String
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs-cluster/${ClusterName}
+
+#========== Roles
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::Region}-${ClusterName}_EC2Role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'ecs.amazonaws.com'
+                - 'ec2.amazonaws.com'
+                - 'events.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AdministratorAccess'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2Role
+      InstanceProfileName: !Sub ${AWS::Region}-${ClusterName}_EC2InstanceProfile
+
+#========== Security Groups
+  NlbAccessSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        'Fn::ImportValue': !Sub ${ClusterName}VPC
+      GroupName: !Sub ${ClusterName}AllowNlbAccess
+      GroupDescription: Enables access to all protocols and IPs
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+          
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        'Fn::ImportValue': !Sub ${ClusterName}VPC
+      GroupName: !Sub ${ClusterName}AllowSSH
+      GroupDescription: Enables access to all IPs to port 22
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
+#========== ECS
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${ClusterName}
+
+  SSHDTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${ClusterName}__sshd
+      ContainerDefinitions:
+        - Name: !Sub ${ClusterName}__sshd
+          Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/sshd
+          PortMappings:
+            - ContainerPort: 22
+              HostPort: 0
+          Privileged: true
+          MemoryReservation: 256
+          #Memory: 256
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub /ecs-cluster/${ClusterName}
+              awslogs-stream-prefix: /ecs-task-output
+              awslogs-region: !Ref AWS::Region
+          Environment:
+            - Name: CLUSTER_NAME
+              Value: !Ref ClusterName
+            - Name: REGION
+              Value: !Ref AWS::Region
+
+  SSHDService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${ClusterName}__sshd
+      Cluster: !Ref ECSCluster
+      Role: !Sub ${EC2Role.Arn}
+      TaskDefinition: !Ref SSHDTask
+      DesiredCount: 1
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+      LoadBalancers:
+        - ContainerName: !Sub ${ClusterName}__sshd
+          ContainerPort: 22
+          TargetGroupArn:
+            'Fn::ImportValue': !Sub ${ClusterName}FrontendNlbDefaultTargetGroup
+      PlacementConstraints:
+        - Type: distinctInstance
+      PlacementStrategies:
+        - Field: instanceId
+          Type: spread
+
+  RedirectTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${ClusterName}__redirectToHttps
+      ContainerDefinitions:
+        - Name: !Sub ${ClusterName}__redirectToHttps
+          Image: 'geldim/https-redirect'
+          PortMappings:
+            - ContainerPort: 80
+              HostPort: 0
+          MemoryReservation: 64
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub /ecs-cluster/${ClusterName}
+              awslogs-stream-prefix: /ecs-task-output
+              awslogs-region: !Ref AWS::Region
+
+  RedirectService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${ClusterName}__redirectToHttps
+      Cluster: !Ref ECSCluster
+      Role: !Sub ${EC2Role.Arn}
+      TaskDefinition: !Ref RedirectTask
+      DesiredCount: 1
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+      LoadBalancers:
+        - ContainerName: !Sub ${ClusterName}__redirectToHttps
+          ContainerPort: 80
+          TargetGroupArn:
+            'Fn::ImportValue': !Sub ${ClusterName}FrontendAlbDefaultTargetGroup
+      PlacementConstraints:
+        - Type: distinctInstance
+      PlacementStrategies:
+        - Field: instanceId
+          Type: spread
+
+#========== EFS
+  EfsFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      FileSystemTags:
+      - Key: Name
+        Value: !Sub ${ClusterName}
+      PerformanceMode: generalPurpose
+
+  EfsMountTargetSubnet1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EfsFileSystem
+      SubnetId:
+        'Fn::ImportValue': !Sub ${ClusterName}PrivateSubnet1
+      SecurityGroups:
+      - 'Fn::ImportValue': !Sub ${ClusterName}InternalAccessSecurityGroup
+
+  EfsMountTargetSubnet2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EfsFileSystem
+      SubnetId:
+        'Fn::ImportValue': !Sub ${ClusterName}PrivateSubnet2
+      SecurityGroups:
+      - 'Fn::ImportValue': !Sub ${ClusterName}InternalAccessSecurityGroup
+
+#========== EC2
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName} bastion
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          GroupSet:
+            - !Ref BastionSecurityGroup
+            - 'Fn::ImportValue': !Sub ${ClusterName}InternalAccessSecurityGroup
+          SubnetId:
+            'Fn::ImportValue': !Sub ${ClusterName}PublicSubnet1
+      ImageId: !Ref EcsImage
+      InstanceType: t2.micro
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          #====== Install pre-requisites
+            yum install -y curl wget unzip jq
+
+          #====== Install aws-cli
+            wget https://s3.amazonaws.com/aws-cli/awscli-bundle.zip
+            unzip awscli-bundle.zip
+            ./awscli-bundle/install -i /usr/local/aws -b /usr/bin/aws
+            rm -rf awscli-bundle*
+            
+            #====== Install nodejs
+            curl -sL https://rpm.nodesource.com/setup_8.x | bash -
+            yum install -y nodejs
+            
+          #=== Install aws-sdk
+            npm install -g aws-sdk
+            
+          #====== Config SSH
+            aws s3 cp s3://${S3Bucket}/scripts/${TypeProject}/ssh_auth /etc/ssh/ssh_auth
+            chmod +x /etc/ssh/ssh_auth
+            sed -i "s/#PermitRootLogin yes/PermitRootLogin yes/" /etc/ssh/sshd_config
+            sed -i "s/#AuthorizedKeysCommand none/AuthorizedKeysCommand \/etc\/ssh\/ssh_auth \%t \%k/" /etc/ssh/sshd_config
+            sed -i "s/#AuthorizedKeysCommandUser nobody/AuthorizedKeysCommandUser root/" /etc/ssh/sshd_config
+            service sshd restart
+
+  EIPBastion:
+    DependsOn: BastionInstance
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref BastionInstance
+      Domain: vpc
+
+  SsmBastionIp:
+    DependsOn: EIPBastion
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /ECS-CLUSTER/${ClusterName}/RDS_BASTION
+      Value: !Sub ${BastionInstance.PublicIp}
+      Type: String
+
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      ImageId: !Ref EcsImage
+      SecurityGroups:
+        - !Ref NlbAccessSecurityGroup
+      InstanceType: !Ref ECSInstanceType
+      AssociatePublicIpAddress: false
+      BlockDeviceMappings:
+        - DeviceName: "/dev/xvda"
+          Ebs:
+            VolumeSize: '100'
+        - DeviceName: "/dev/xvdcz"
+          Ebs:
+            VolumeSize: '100'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          #====== Resize EBS
+            resize2fs /dev/xvda
+            resize2fs /dev/xvdcz
+
+          #====== Open Docker Port Api
+            sed -i "s|OPTIONS=\"|OPTIONS=\"-H tcp://0.0.0.0:2375 -H unix:///var/run/docker.sock |g" /etc/sysconfig/docker
+            service docker restart
+
+          #====== Mount EFS
+            yum install -y nfs-utils
+            mkdir /efs
+            mount -t nfs4 -o nfsvers=4.1 ${EfsFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /efs
+            echo '${EfsFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /efs nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 0 0' >> /etc/fstab
+
+          #====== Install pre-requisites
+            yum install -y curl wget unzip jq
+
+          #====== Install aws-cli
+            wget https://s3.amazonaws.com/aws-cli/awscli-bundle.zip
+            unzip awscli-bundle.zip
+            ./awscli-bundle/install -i /usr/local/aws -b /usr/bin/aws
+            rm -rf awscli-bundle*
+
+          #====== Install nodejs
+            curl -sL https://rpm.nodesource.com/setup_8.x | bash -
+            yum install -y nodejs
+            
+            #=== Install aws-sdk
+              npm install -g aws-sdk
+
+          #====== Config SSH
+            aws s3 cp s3://${S3Bucket}/scripts/${TypeProject}/ssh_auth /etc/ssh/ssh_auth
+            chmod +x /etc/ssh/ssh_auth
+            sed -i "s/#PermitRootLogin yes/PermitRootLogin yes/" /etc/ssh/sshd_config
+            sed -i "s/#AuthorizedKeysCommand none/AuthorizedKeysCommand \/etc\/ssh\/ssh_auth \%t \%k/" /etc/ssh/sshd_config
+            sed -i "s/#AuthorizedKeysCommandUser nobody/AuthorizedKeysCommandUser root/" /etc/ssh/sshd_config
+            /etc/init.d/sshd restart
+
+          #====== Install SSM
+            yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+            start amazon-ssm-agent
+            chkconfig amazon-ssm-agent on
+
+          #====== Install AWSLOGS
+            yum install -y awslogs
+            aws s3 cp s3://${S3Bucket}/scripts/${TypeProject}/awslogs.conf /etc/awslogs/awslogs.conf
+            sed -i "s/clustername/${ECSCluster}/g" /etc/awslogs/awslogs.conf
+            sed -i "s/instanceID/`curl -s http://169.254.169.254/latest/meta-data/instance-id`/g" /etc/awslogs/awslogs.conf
+            service awslogs start
+            chkconfig awslogs on
+
+          #====== Adds instance to ECS cluster and put attributes
+            echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+            echo ECS_INSTANCE_ATTRIBUTES={\"gitBranch\":\"${Branch}\", \"gitCommit\":\"${Commit}\", \"clusterVersion\":\"${ClusterVersion}\"} >> /etc/ecs/ecs.config
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName} cluster
+          PropagateAtLaunch: true
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MinSize: !Ref AsgServiceMin
+      DesiredCapacity: !Ref AsgServiceDesired
+      MaxSize: !Ref AsgServiceMax
+      TargetGroupARNs:
+        - 'Fn::ImportValue': !Sub ${ClusterName}BackendAlbDefaultTargetGroup
+      VPCZoneIdentifier:
+        - 'Fn::ImportValue': !Sub ${ClusterName}PrivateSubnet1
+        - 'Fn::ImportValue': !Sub ${ClusterName}PrivateSubnet2
+
+#========== Actions for ASG
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Cooldown: 90
+      ScalingAdjustment: 1
+
+  ScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Cooldown: 300
+      ScalingAdjustment: -1
+
+Outputs:
+  ScaleUpPolicy:
+    Value: !Ref ScaleUpPolicy
+    Export:
+      Name: !Sub ${ClusterName}ScaleUpPolicy
+
+  ScaleDownPolicy:
+    Value: !Ref ScaleDownPolicy
+    Export:
+      Name: !Sub ${ClusterName}ScaleDownPolicy
+
+  BastionAddress:
+    Value: !Sub ${BastionInstance.PublicIp}
+    Export:
+      Name: !Sub ${ClusterName}BastionAddress
+
+  BastionSecurityGroup:
+    Value: !Ref BastionSecurityGroup
+    Export:
+      Name: !Sub ${ClusterName}BastionSecurityGroup
+
+  ECSRoleArn:
+    Value: !Sub ${EC2Role.Arn}
+    Export:
+      Name: !Sub ${ClusterName}ECSRoleArn
+
+  ECSCluster:
+    Value: !Ref ECSCluster
+    Export:
+      Name: !Sub ${ClusterName}ECSCluster
+
+  ECSClusterArn:
+    Value: !Sub ${ECSCluster.Arn}
+    Export:
+      Name: !Sub ${ClusterName}ECSClusterArn
+
+  AutoScalingGroup:
+    Value: !Ref AutoScalingGroup
+    Export:
+      Name: !Sub ${ClusterName}AutoScalingGroup
+
+  ClusterVersion:
+    Value: !Ref ClusterVersion
+    Export:
+      Name: !Sub ${ClusterName}ClusterVersion

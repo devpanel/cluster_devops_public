@@ -1,0 +1,311 @@
+/*
+devpanel
+Copyright (C) 2018 devpanel
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+
+pipeline
+{
+  agent
+  {
+    label 'jenkins-ecs-slave'
+  }
+  options
+  {
+    skipDefaultCheckout true
+  }
+  environment
+  {
+    CLUSTER_VERSION = "1.0"
+    SCM = "empty"
+    CLUSTER_SECRETS = "empty"
+  }
+  stages
+  {
+    stage('Checkout SCM')
+    {
+      steps
+      {
+        script
+        {
+          SCM = checkout scm
+          SCM.GIT_BRANCH = SCM.GIT_BRANCH.tokenize('/')[1]
+          SCM.GIT_COMMIT = SCM.GIT_COMMIT
+        }
+      }
+    }
+    stage('Deploy Parameters')
+    {
+      steps
+      {
+        script
+        {
+          PARAMETERS =
+          [
+            string(name: 'REGION', description: 'Region', defaultValue: "us-east-1"),
+            string(name: 'CLUSTER_NAME', description: 'Cluster Name', defaultValue: "pandora")
+          ]
+
+          if (!params)
+          {
+            properties([parameters(PARAMETERS)])
+            error("Parameters does not exists in this execution. Run again!")
+          }
+          else
+            properties([parameters(PARAMETERS)])
+
+          params = readYaml(text: sh(script: "devops/jenkins/scripts/Parameter/concatenate.sh 'devops/jenkins/jobs/pipeline/cluster/ecs/rds/deploy/fixedParameters.yml' '${params}'", returnStdout: true).trim())
+        }
+      }
+    }
+    stage('Gets Global Variables and Validate Resources')
+    {
+      steps
+      {
+        script
+        {
+          //== Validate Account
+          //== Enable aws-cli to access remote account
+          IS_CORE_TOKEN = sh(script: "devops/jenkins/scripts/Aws/isCore.sh", returnStdout: true).trim()
+          if (IS_CORE_TOKEN == "yes")
+            error("ACCESS_KEY_ID and SECRET_ACCESS_KEY don't can be of Core Account!")
+
+          //== Validates main parameters
+          REGIONS = sh(script: "devops/jenkins/scripts/Parameter/getRegions.sh", returnStdout: true).trim()
+          if (!params.REGION)
+            error("Parameter REGION is required!")
+
+          if (!params.CLUSTER_NAME)
+            error("Parameter CLUSTER_NAME is required!")
+
+          if (!(params.CLUSTER_NAME ==~ /^[a-zA-Z0-9]+$/))
+            error("cluster name is invalid (not equals regex [a-zA-Z0-9]+)")
+
+          //== Validade YAMLs
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster-vpc.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster-rds.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster-elb.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster-ecs.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster-alarms.yml")
+
+          //== General parameters
+          env.STACK_NAME = "${params.CLUSTER_NAME}-cluster"
+
+          //== Others parameters
+          env.CLUSTER_CERTIFICATE = sh(script: "devops/jenkins/scripts/Utilities/createDefaultCertificate.sh ${params.REGION} ${params.CLUSTER_NAME}", returnStdout: true).trim()
+          env.LAMBDA_ALARM_TO_SLACK_NAME = (params.LAMBDA_ALARM_TO_SLACK == "CREATE_NEW") ? "AlarmToSlack-${params.CLUSTER_NAME}" : params.LAMBDA_ALARM_TO_SLACK.tokenize(' : ')[1]
+          env.IS_FIRST_EXECUTION = sh(script: "devops/jenkins/scripts/Utilities/isFirstExecution.sh ${params.REGION} ${env.STACK_NAME}", returnStdout: true).trim()
+          env.ECS_AMI = sh(script: "devops/jenkins/scripts/Utilities/getEcsAmi.sh ${params.REGION}", returnStdout: true).trim()
+
+          //== S3 parameters
+          env.TYPE_PROJECT = "ecs-cluster-rds"
+          env.S3_BUCKET = sh(script: "devops/jenkins/scripts/Utilities/createS3Bucket.sh ${params.REGION}", returnStdout: true).trim()
+
+          //== Database parameters
+          env.DB_ENGINE = params.DB_ENGINE.split(' - ')[0]
+          env.DB_ENGINE_VERSION = params.DB_ENGINE.split(' - ')[1]
+          env.DB_ENCRYPTION_KEY = (params.DB_ENCRYPTION_KEY == "WITHOUT") ? "WITHOUT" : params.DB_ENCRYPTION_KEY.split("[\\(\\)]")[1]
+          env.DB_SNAPSHOT = (params.DB_SNAPSHOT == "WITHOUT") ? "WITHOUT" : params.DB_SNAPSHOT.tokenize(' : ')[1]
+
+
+          //== Gets And Validates Database parameters
+          if (env.IS_FIRST_EXECUTION == "yes")
+          {
+            env.ROOT_DB_USERNAME = sh(script: "devops/jenkins/scripts/Utilities/generateRandomName.sh root 6", returnStdout: true).trim()
+            env.ROOT_DB_PASSWORD = sh(script: "devops/jenkins/scripts/Utilities/generateRandomName.sh pass 24", returnStdout: true).trim()
+
+            sh("devops/jenkins/scripts/SecretManager/set.sh ${params.REGION} /ECS-CLUSTER/${params.CLUSTER_NAME} '{\"ROOT_DB_USERNAME\":\"${env.ROOT_DB_USERNAME}\",\"ROOT_DB_PASSWORD\":\"${env.ROOT_DB_PASSWORD}\"}'")
+          }
+          else
+          {
+            CLUSTER_SECRETS = readJSON(text: sh(script: "devops/jenkins/scripts/SecretManager/get.sh ${params.REGION} /ECS-CLUSTER/${params.CLUSTER_NAME}", returnStdout: true).trim())
+            env.ROOT_DB_USERNAME = CLUSTER_SECRETS.CONTAINER_DB_USERNAME
+            env.ROOT_DB_PASSWORD = CLUSTER_SECRETS.CONTAINER_DB_PASSWORD
+          }
+        }
+      }
+    }
+    stage ('Create Docker Images')
+    {
+      parallel
+      {
+        stage('Create MySQL-Client Image')
+        {
+          steps
+          {
+            dir("devops/docker/mysql-client")
+            {
+              sh("docker build -t mysql-client .")
+            }
+          }
+        }
+        stage('Build SSHD.js Image')
+        {
+          steps
+          {
+            dir("devops/docker/sshd.js")
+            {
+              sh("docker build -t sshd .")
+            }
+          }
+        }
+      }
+    }
+    stage ('Push Images do ECR')
+    {
+      parallel
+      {
+        stage('Push MySQL-Client Image to ECR')
+        {
+          steps
+          {
+            sh("ecs-cli push -r ${params.REGION} mysql-client")
+          }
+        }
+        stage('Push SSHD.js Image to ECR')
+        {
+          steps
+          {
+            sh("ecs-cli push -r ${params.REGION} sshd")
+          }
+        }
+      }
+    }
+    stage('Copy scripts to S3')
+    {
+      steps
+      {
+        //==== Cloudformation
+        sh("aws s3 sync devops/s3/cloudformation/ecs/rds s3://${env.S3_BUCKET}/cloudformation/${env.TYPE_PROJECT}/")
+
+        //==== Scripts
+        sh("aws s3 sync devops/s3/scripts s3://${env.S3_BUCKET}/scripts/${env.TYPE_PROJECT}/")
+      }
+    }
+    stage('Deploy cloudformation')
+    {
+      steps
+      {
+        script
+        {
+          env.CLOUDFORMATION_STAGE = "yes"
+          sh("""
+            aws cloudformation deploy --region ${params.REGION} --stack-name ${env.STACK_NAME} --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset --template-file devops/s3/cloudformation/ecs/rds/cluster.yml --parameter-overrides \
+            ClusterName=${params.CLUSTER_NAME} \
+            ECSInstanceType=${params.CLUSTER_TYPE} \
+            AsgServiceMin=${params.CLUSTER_MIN_MACHINES} \
+            AsgServiceDesired=${params.CLUSTER_MIN_MACHINES} \
+            AsgServiceMax=${params.CLUSTER_MAX_MACHINES} \
+            DefaultAcmCertificateArn=${env.CLUSTER_CERTIFICATE} \
+            DBKmsKeyIdArn=${env.DB_ENCRYPTION_KEY} \
+            DBSnapshotName=${env.DB_SNAPSHOT} \
+            DBUser='${env.ROOT_DB_USERNAME}' \
+            DBPassword='${env.ROOT_DB_PASSWORD}' \
+            DBEngine=${env.DB_ENGINE} \
+            DBEngineVersion=${env.DB_ENGINE_VERSION} \
+            DBInstanceType=${params.DB_TYPE} \
+            DBStorageType=${params.DB_STORAGE_TYPE} \
+            DBSize=${params.DB_SIZE} \
+            DBHasMultiAZ=${params.DB_HAS_MULTIAZ} \
+            DBHasAutomaticBackup=${params.DB_HAS_AUTOMATIC_BACKUP} \
+            CreatePublicAlb=${params.CREATE_PUBLIC_ALB} \
+            LambdaAlarmToSlackName=${env.LAMBDA_ALARM_TO_SLACK_NAME} \
+            S3Bucket=${env.S3_BUCKET} \
+            TypeProject=${env.TYPE_PROJECT} \
+            Branch=${SCM.GIT_BRANCH} \
+            Commit=${SCM.GIT_COMMIT} \
+            ClusterVersion=${env.CLUSTER_VERSION} \
+            EcsImage=${env.ECS_AMI} \
+            HostedZoneNameForProxyDomains=${params.HOSTED_ZONE_NAME_FOR_PROXY_DOMAINS}
+            """)
+        }
+      }
+    }
+    stage('Create Private NameSpace')
+    {
+      steps
+      {
+        sh("devops/jenkins/scripts/Utilities/createPrivateHostedZone.sh ${params.REGION} ${params.CLUSTER_NAME} ${params.HOSTED_ZONE_NAME_FOR_PROXY_DOMAINS}")
+      }
+    }
+    stage('Set Access Subdomain')
+    {
+      steps
+      {
+        script
+        {
+          env.ACCESS_ADDRESS = sh(script: "devops/jenkins/scripts/Utilities/getCloudFormationVariable.sh ${params.REGION} '${params.CLUSTER_NAME}FrontendNlbDns'", returnStdout: true).trim()
+
+          sh("devops/jenkins/scripts/Aws/disableRemote.sh") //== Enable aws-cli to access core account
+
+          sh("devops/jenkins/scripts/Utilities/setSubdomain.sh 'access.${params.CLUSTER_NAME}.${params.REGION}.${params.HOSTED_ZONE_NAME_FOR_PROXY_DOMAINS}' '${env.ACCESS_ADDRESS}'")
+
+          sh("devops/jenkins/scripts/Aws/enableRemote.sh")  //== Enable aws-cli to access remote account
+        }
+      }
+    }
+    stage('Set Bastion Subdomain')
+    {
+      steps
+      {
+        script
+        {
+          env.BASTION_ADDRESS = sh(script: "devops/jenkins/scripts/Utilities/getCloudFormationVariable.sh ${params.REGION} '${params.CLUSTER_NAME}BastionAddress'", returnStdout: true).trim()
+
+          sh("devops/jenkins/scripts/Aws/disableRemote.sh") //== Enable aws-cli to access core account
+
+          sh("devops/jenkins/scripts/Utilities/setSubdomain.sh 'bastion.${params.CLUSTER_NAME}.${params.REGION}.${params.HOSTED_ZONE_NAME_FOR_PROXY_DOMAINS}' '${env.BASTION_ADDRESS}'")
+
+          sh("devops/jenkins/scripts/Aws/enableRemote.sh")  //== Enable aws-cli to access remote account
+        }
+      }
+    }
+    stage('Set RDS Subdomain')
+    {
+      steps
+      {
+        script
+        {
+          env.RDS_ADDRESS = sh(script: "devops/jenkins/scripts/Utilities/getCloudFormationVariable.sh ${params.REGION} '${params.CLUSTER_NAME}DBAddress'", returnStdout: true).trim()
+          sh("devops/jenkins/scripts/Utilities/setSubdomain.sh 'rds.${params.CLUSTER_NAME}.${params.REGION}.${params.HOSTED_ZONE_NAME_FOR_PROXY_DOMAINS}' '${env.RDS_ADDRESS}'")
+        }
+      }
+    }
+  }
+  post
+  {
+    always
+    {
+      script
+      {
+        env.RESULT=(currentBuild.result == null ? "SUCCESSFUL" : currentBuild.result)
+
+        if (env.CLOUDFORMATION_STAGE == "yes")
+          sh("aws cloudformation describe-stack-events --stack-name ${env.STACK_NAME} --region ${params.REGION} | jq '.StackEvents[] | .LogicalResourceId + \" - \" + .ResourceStatus + \" - \" + .ResourceStatusReason'")
+
+        if (env.RESULT == "FAILURE" && env.IS_FIRST_EXECUTION == "yes")
+        {
+          build job: 'cluster-delete', propagate: false, parameters:
+          [
+            string(name: 'STACK', value: "${params.REGION} : ${env.STACK_NAME}")
+          ]
+        }
+      }
+    }
+  }
+}

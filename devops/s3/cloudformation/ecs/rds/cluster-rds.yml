@@ -1,0 +1,143 @@
+#devpanel
+#Copyright (C) 2018 devpanel
+
+#This program is free software: you can redistribute it and/or modify
+#it under the terms of the GNU General Public License as published by
+#the Free Software Foundation, either version 3 of the License, or
+#(at your option) any later version.
+
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+
+#You should have received a copy of the GNU General Public License
+#along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Sets up ecs-cluster-rds
+Parameters:
+  ClusterName:
+    Type: String
+
+  DBEngine:
+    Type: String
+
+  DBEngineVersion:
+    Type: String
+
+  DBInstanceType:
+    Type: String
+
+  DBUser:
+    Type: String
+    #NoEcho: true
+
+  DBPassword:
+    Type: String
+    #NoEcho: true
+
+  DBKmsKeyIdArn:
+    Type: String
+
+  DBSnapshotName:
+    Type: String
+
+  DBHasMultiAZ:
+    Type: String
+
+  DBHasAutomaticBackup:
+    Type: String
+
+Conditions:
+  dbIsEncrypted: !Not [!Equals [!Ref DBKmsKeyIdArn, "WITHOUT"]]
+  dbHasSnapshot: !Not [!Equals [!Ref DBSnapshotName, "WITHOUT"]]
+  dbHasAutomaticBackup: !Equals [!Ref DBHasAutomaticBackup, "yes"]
+  dbHasMultiAZ: !Equals [!Ref DBHasMultiAZ, "yes"]
+
+Resources:
+#========== Security Groups
+  MySQLSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        'Fn::ImportValue': !Sub ${ClusterName}VPC
+      GroupName: !Sub ${ClusterName}AllowMYSQL
+      GroupDescription: Enables MySQL access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 10.10.0.0/16
+
+#========== RDS
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      SubnetIds:
+        - 'Fn::ImportValue': !Sub ${ClusterName}PublicSubnet1
+        - 'Fn::ImportValue': !Sub ${ClusterName}PublicSubnet2
+      DBSubnetGroupDescription: Database Subnet Group
+
+  DBCluster:
+    Type: "AWS::RDS::DBCluster"
+    Properties:
+      Engine: !Ref DBEngine
+      EngineVersion: !Ref DBEngineVersion
+      Port: 3306
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        -
+          Fn::GetAtt:
+            - MySQLSecurityGroup
+            - GroupId
+      StorageEncrypted: !If [dbIsEncrypted, true, !Ref 'AWS::NoValue']
+      BackupRetentionPeriod: !If [dbHasAutomaticBackup, 35, 0]
+      DBClusterParameterGroupName: "default.aurora-mysql5.7"
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: !Ref DBEngine
+      DBInstanceClass: !Ref DBInstanceType
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      KmsKeyId: !If [dbIsEncrypted, !Ref DBKmsKeyIdArn, !Ref 'AWS::NoValue']
+      DBClusterIdentifier: !Ref "DBCluster"
+      DBInstanceIdentifier: !Sub ${ClusterName}-aurora-db1
+      DBSnapshotIdentifier: !If [dbHasSnapshot, !Ref DBSnapshotName, !Ref 'AWS::NoValue']
+      PubliclyAccessible: false
+
+
+  SsmRdsAddress:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /ECS-CLUSTER/${ClusterName}/RDS_ADDRESS
+      Value: !Sub ${DBCluster.Endpoint.Address}
+      Type: String
+
+  SsmRdsROAddress:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /ECS-CLUSTER/${ClusterName}/RDS_RO_ADDRESS
+      Value: !Sub ${DBCluster.ReadEndpoint.Address}
+      Type: String
+
+Outputs:
+  MySQLSecurityGroup:
+    Value: !Ref MySQLSecurityGroup
+    Export:
+      Name: !Sub ${ClusterName}MySQLSecurityGroup
+
+  DBInstance:
+    Value: !Ref DBInstance
+    Export:
+      Name: !Sub ${ClusterName}DBInstance
+
+  DBAddress:
+    Value: !Sub ${DBInstance.Endpoint.Address}
+    Export:
+      Name: !Sub ${ClusterName}DBAddress

@@ -1,0 +1,198 @@
+/*
+devpanel
+Copyright (C) 2018 devpanel
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+
+
+pipeline
+{
+  agent
+  {
+    label 'jenkins-ecs-slave'
+  }
+  options
+  {
+    skipDefaultCheckout true
+  }
+  environment
+  {
+    CLUSTER_VERSION = "1.0"
+    SCM = "empty"
+    CLUSTER_SECRETS = "empty"
+  }
+  stages
+  {
+    stage('Checkout SCM')
+    {
+      steps
+      {
+        script
+        {
+          SCM = checkout scm
+          SCM.GIT_BRANCH = SCM.GIT_BRANCH.tokenize('/')[1]
+          SCM.GIT_COMMIT = SCM.GIT_COMMIT
+        }
+      }
+    }
+    stage('Deploy Parameters')
+    {
+      steps
+      {
+        script
+        {
+          // Define dynamic choice parameters
+          REGIONS = sh(script: "devops/jenkins/scripts/Parameter/getRegions.sh", returnStdout: true).trim()
+
+          PARAMETERS =
+          [
+            choice(name: 'REGION', description: 'Region', choices: REGIONS),
+            string(name: 'CLUSTER_NAME', description: 'Cluster Name', defaultValue: "pandora")
+          ]
+
+          if (!params)
+          {
+            properties([parameters(PARAMETERS)])
+            error("Parameters does not exists in this execution. Run again!")
+          }
+          else
+            properties([parameters(PARAMETERS)])
+
+          params = readYaml(text: sh(script: "devops/jenkins/scripts/Parameter/concatenate.sh 'devops/jenkins/jobs/pipeline/cluster/ecs/rds/deploy/fixedParameters.yml' '${params}'", returnStdout: true).trim())
+        }
+      }
+    }
+    stage('Gets Global Variables and Validate Resources')
+    {
+      steps
+      {
+        script
+        {
+          //== Validate Account
+          //== Enable aws-cli to access remote account
+          IS_CORE_TOKEN = sh(script: "devops/jenkins/scripts/Aws/isCore.sh", returnStdout: true).trim()
+          if (IS_CORE_TOKEN == "yes")
+            error("ACCESS_KEY_ID and SECRET_ACCESS_KEY don't can be of Core Account!")
+
+          //== Validates main parameters
+          if (!params.REGION)
+            error("Parameter REGION is required!")
+
+          if (!params.CLUSTER_NAME)
+            error("Parameter CLUSTER_NAME is required!")
+
+          if (!(params.CLUSTER_NAME ==~ /^[a-zA-Z0-9]+$/))
+            error("cluster name is invalid (not equals regex [a-zA-Z0-9]+)")
+
+          //== Validade YAMLs
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster-vpc.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster-rds.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster-elb.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster-ecs.yml")
+          sh("aws cloudformation --region ${params.REGION} validate-template --template-body file://devops/s3/cloudformation/ecs/rds/cluster-alarms.yml")
+
+          //== General parameters
+          env.STACK_NAME = "${params.CLUSTER_NAME}-cluster"
+
+          //== Others parameters
+          env.HOSTED_ZONE_NAME_FOR_PROXY_DOMAINS = sh(script: "devops/jenkins/scripts/Utilities/getStackParameter.sh ${REGION} ${CLUSTER_NAME}-cluster HostedZoneNameForProxyDomains", returnStdout: true).trim()
+        }
+      }
+    }
+    stage('Remove Access Subdomain')
+    {
+      steps
+      {
+        script
+        {
+          env.ACCESS_ADDRESS = sh(script: "devops/jenkins/scripts/Utilities/getCloudFormationVariable.sh ${REGION} '${CLUSTER_NAME}FrontendNlbDns'", returnStdout: true).trim()
+
+          sh("devops/jenkins/scripts/Aws/disableRemote.sh") //== Enable aws-cli to access core account
+
+          sh("devops/jenkins/scripts/Utilities/deleteSubdomain.sh 'access.${CLUSTER_NAME}.${REGION}.${env.HOSTED_ZONE_NAME_FOR_PROXY_DOMAINS}'")
+
+          sh("devops/jenkins/scripts/Aws/enableRemote.sh")  //== Enable aws-cli to access remote account
+        }
+      }
+    }
+    stage('Remove Bastion Subdomain')
+    {
+      steps
+      {
+        script
+        {
+          sh("devops/jenkins/scripts/Aws/disableRemote.sh") //== Enable aws-cli to access core account
+
+          sh("devops/jenkins/scripts/Utilities/deleteSubdomain.sh 'bastion.${CLUSTER_NAME}.${REGION}.${env.HOSTED_ZONE_NAME_FOR_PROXY_DOMAINS}'")
+
+          sh("devops/jenkins/scripts/Aws/enableRemote.sh")  //== Enable aws-cli to access remote account
+        }
+      }
+    }
+    stage('Remove RDS Subdomain')
+    {
+      steps
+      {
+        sh("devops/jenkins/scripts/Utilities/deletePrivateSubdomain.sh 'rds.${CLUSTER_NAME}.${REGION}.${env.HOSTED_ZONE_NAME_FOR_PROXY_DOMAINS}'")
+      }
+    }
+    stage('Delete Private NameSpace')
+    {
+      steps
+      {
+        sh("devops/jenkins/scripts/Utilities/deletePrivateHostedZone.sh ${REGION} ${CLUSTER_NAME} ${env.HOSTED_ZONE_NAME_FOR_PROXY_DOMAINS}")
+      }
+    }
+    stage('Delete Cloudformation')
+    {
+      steps
+      {
+        script
+        {
+          env.CLOUDFORMATION_STAGE = "yes"
+          sh("aws cloudformation delete-stack --region ${REGION} --stack-name ${STACK_NAME}")
+          sh("aws cloudformation wait stack-delete-complete --region ${REGION} --stack-name ${STACK_NAME}")
+        }
+      }
+    }
+    stage('Remove Parameters/Secrets')
+    {
+      steps
+      {
+        sh("aws ssm delete-parameter --region ${REGION} --name /ECS-CLUSTER/${CLUSTER_NAME}/RDS_ROOT_USERNAME || :")
+        sh("aws ssm delete-parameter --region ${REGION} --name /ECS-CLUSTER/${CLUSTER_NAME}/RDS_ROOT_PASSWORD || :")
+        sh("aws ssm delete-parameter --region ${REGION} --name /ECS-CLUSTER/${CLUSTER_NAME}/RDS_CONTAINER_USERNAME || :")
+        sh("aws ssm delete-parameter --region ${REGION} --name /ECS-CLUSTER/${CLUSTER_NAME}/RDS_CONTAINER_PASSWORD || :")
+      }
+    }
+  }
+  post
+  {
+    always
+    {
+      script
+      {
+        RESULT=(currentBuild.result == null ? "SUCCESSFUL" : currentBuild.result)
+
+        if (env.CLOUDFORMATION_STAGE == "yes")
+          sh("aws cloudformation describe-stack-events --stack-name ${STACK_NAME} --region ${REGION} | jq '.StackEvents[] | .LogicalResourceId + \" - \" + .ResourceStatus + \" - \" + .ResourceStatusReason'")
+
+        sh("devops/jenkins/scripts/Utilities/sendToSlack.sh '*${RESULT}:* Job _${JOB_NAME} [${BUILD_NUMBER}]_ (${BUILD_URL})'")
+      }
+    }
+  }
+}

@@ -1,0 +1,176 @@
+#devpanel
+#Copyright (C) 2018 devpanel
+
+#This program is free software: you can redistribute it and/or modify
+#it under the terms of the GNU General Public License as published by
+#the Free Software Foundation, either version 3 of the License, or
+#(at your option) any later version.
+
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#GNU General Public License for more details.
+
+#You should have received a copy of the GNU General Public License
+#along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Sets up ecs-cluster-rds
+Parameters:
+  ClusterName:
+    Type: String
+
+  ECSInstanceType:
+    Type: String
+
+  AsgServiceMin:
+    Type: String
+
+  AsgServiceDesired:
+    Type: String
+
+  AsgServiceMax:
+    Type: String
+
+  DBEngine:
+    Type: String
+  
+  DBEngineVersion:
+    Type: String
+
+  DBInstanceType:
+    Type: String
+
+  DBUser:
+    Type: String
+    NoEcho: true
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+
+  DBKmsKeyIdArn:
+    Type: String
+
+  DBSnapshotName:
+    Type: String
+
+  DBHasMultiAZ:
+    Type: String
+
+  DBHasAutomaticBackup:
+    Type: String
+
+  Branch:
+    Type: String
+
+  Commit:
+    Type: String
+
+  DefaultAcmCertificateArn:
+    Type: String
+
+  LambdaAlarmToSlackName:
+    Type: String
+  
+  S3Bucket:
+    Type: String
+ 
+  TypeProject:
+    Type: String
+
+  ClusterVersion:
+    Type: String
+ 
+  EcsImage:
+    Type: String
+    
+  HostedZoneNameForProxyDomains: 
+    Type: String
+
+Resources:
+  #========== Stacks
+  StackVpc:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/cloudformation/${TypeProject}/cluster-vpc.yml
+      Parameters:
+        ClusterName: !Ref ClusterName
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-cluster-vpc
+
+  StackRds:
+    DependsOn: StackVpc
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/cloudformation/${TypeProject}/cluster-rds.yml
+      Parameters:
+        ClusterName: !Ref ClusterName
+        DBEngine: !Ref DBEngine
+        DBEngineVersion: !Ref DBEngineVersion
+        DBInstanceType: !Ref DBInstanceType
+        DBUser: !Ref DBUser
+        DBPassword: !Ref DBPassword
+        DBKmsKeyIdArn: !Ref DBKmsKeyIdArn
+        DBSnapshotName: !Ref DBSnapshotName
+        DBHasMultiAZ: !Ref DBHasMultiAZ
+        DBHasAutomaticBackup: !Ref DBHasAutomaticBackup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-cluster-rds
+
+  StackElb:
+    DependsOn: StackVpc
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/cloudformation/${TypeProject}/cluster-elb.yml
+      Parameters:
+        ClusterName: !Ref ClusterName
+        DefaultAcmCertificateArn: !Ref DefaultAcmCertificateArn
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-cluster-elb
+
+  StackEcs:
+    DependsOn: StackElb
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/cloudformation/${TypeProject}/cluster-ecs.yml
+      Parameters:
+        ClusterName: !Ref ClusterName
+        ECSInstanceType: !Ref ECSInstanceType
+        AsgServiceMin: !Ref AsgServiceMin
+        AsgServiceDesired: !Ref AsgServiceDesired
+        AsgServiceMax: !Ref AsgServiceMax
+        S3Bucket: !Ref S3Bucket
+        TypeProject: !Ref TypeProject
+        Branch: !Ref Branch
+        Commit: !Ref Commit
+        ClusterVersion: !Ref ClusterVersion
+        EcsImage: !Ref EcsImage
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-cluster-ecs
+          
+  StackAlarms:
+    DependsOn:
+      - StackEcs
+      - StackRds
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/cloudformation/${TypeProject}/cluster-alarms.yml
+      Parameters:
+        ClusterName: !Ref ClusterName
+        LambdaAlarmToSlackArn: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${LambdaAlarmToSlackName}
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-cluster-alarms
+          
+Outputs:
+  LambdaAlarmToSlackArn:
+    Value: !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${LambdaAlarmToSlackName}
+    Export:
+      Name: !Sub ${ClusterName}LambdaAlarmToSlackArn
